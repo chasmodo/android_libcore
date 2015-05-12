@@ -847,6 +847,24 @@ public final class CipherTest extends TestCase {
         }
     }
 
+    public void testCipher_getInstance_DoesNotSupportKeyClass_Success() throws Exception {
+        Provider mockProvider = new MockProvider("MockProvider") {
+            public void setup() {
+                put("Cipher.FOO", MockCipherSpi.AllKeyTypes.class.getName());
+                put("Cipher.FOO SupportedKeyClasses", "None");
+            }
+        };
+
+        Security.addProvider(mockProvider);
+        try {
+            Cipher c = Cipher.getInstance("FOO", mockProvider);
+            c.init(Cipher.ENCRYPT_MODE, new MockKey());
+            assertEquals(mockProvider, c.getProvider());
+        } finally {
+            Security.removeProvider(mockProvider.getName());
+        }
+    }
+
     public void testCipher_getInstance_SuppliedProviderNotRegistered_MultipartTransform_Success()
             throws Exception {
         Provider mockProvider = new MockProvider("MockProvider") {
@@ -1136,6 +1154,9 @@ public final class CipherTest extends TestCase {
 
         final AlgorithmParameterSpec decryptSpec = getDecryptAlgorithmParameterSpec(encryptSpec, c);
         int decryptMode = getDecryptMode(algorithm);
+
+        test_Cipher_init_Decrypt_NullParameters(c, decryptMode, encryptKey, decryptSpec != null);
+
         c.init(decryptMode, encryptKey, decryptSpec);
         assertEquals(cipherID + " getBlockSize() decryptMode",
                      getExpectedBlockSize(algorithm, decryptMode, providerName), c.getBlockSize());
@@ -1268,6 +1289,53 @@ public final class CipherTest extends TestCase {
         }
     }
 
+    private void test_Cipher_init_Decrypt_NullParameters(Cipher c, int decryptMode, Key encryptKey,
+            boolean needsParameters) throws Exception {
+        try {
+            c.init(decryptMode, encryptKey, (AlgorithmParameterSpec) null);
+            if (needsParameters) {
+                fail("Should throw InvalidAlgorithmParameterException with null parameters");
+            }
+        } catch (InvalidAlgorithmParameterException e) {
+            if (!needsParameters) {
+                throw e;
+            }
+        }
+
+        try {
+            c.init(decryptMode, encryptKey, (AlgorithmParameterSpec) null, (SecureRandom) null);
+            if (needsParameters) {
+                fail("Should throw InvalidAlgorithmParameterException with null parameters");
+            }
+        } catch (InvalidAlgorithmParameterException e) {
+            if (!needsParameters) {
+                throw e;
+            }
+        }
+
+        try {
+            c.init(decryptMode, encryptKey, (AlgorithmParameters) null);
+            if (needsParameters) {
+                fail("Should throw InvalidAlgorithmParameterException with null parameters");
+            }
+        } catch (InvalidAlgorithmParameterException e) {
+            if (!needsParameters) {
+                throw e;
+            }
+        }
+
+        try {
+            c.init(decryptMode, encryptKey, (AlgorithmParameters) null, (SecureRandom) null);
+            if (needsParameters) {
+                fail("Should throw InvalidAlgorithmParameterException with null parameters");
+            }
+        } catch (InvalidAlgorithmParameterException e) {
+            if (!needsParameters) {
+                throw e;
+            }
+        }
+    }
+
     public void testInputPKCS1Padding() throws Exception {
         for (String provider : RSA_PROVIDERS) {
             testInputPKCS1Padding(provider);
@@ -1293,11 +1361,22 @@ public final class CipherTest extends TestCase {
         Cipher encryptCipher = Cipher.getInstance("RSA/ECB/NoPadding", provider);
         encryptCipher.init(Cipher.ENCRYPT_MODE, encryptKey);
         byte[] cipherText = encryptCipher.doFinal(prePaddedPlainText);
+        encryptCipher.update(prePaddedPlainText);
+        encryptCipher.init(Cipher.ENCRYPT_MODE, encryptKey);
+        byte[] cipherText2 = encryptCipher.doFinal(prePaddedPlainText);
+        assertEquals(Arrays.toString(cipherText),
+                     Arrays.toString(cipherText2));
+
         Cipher decryptCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", provider);
         decryptCipher.init(Cipher.DECRYPT_MODE, decryptKey);
         byte[] plainText = decryptCipher.doFinal(cipherText);
         assertEquals(Arrays.toString(ORIGINAL_PLAIN_TEXT),
                      Arrays.toString(plainText));
+        decryptCipher.update(prePaddedPlainText);
+        decryptCipher.init(Cipher.DECRYPT_MODE, decryptKey);
+        byte[] plainText2 = decryptCipher.doFinal(cipherText);
+        assertEquals(Arrays.toString(plainText),
+                     Arrays.toString(plainText2));
     }
 
     public void testOutputPKCS1Padding() throws Exception {
@@ -2795,6 +2874,17 @@ public final class CipherTest extends TestCase {
         if (errBuffer.size() > 0) {
             throw new Exception("Errors encountered:\n\n" + errBuffer.toString() + "\n\n");
         }
+    }
+
+    public void testCipher_Update_WithZeroLengthInput_ReturnsNull() throws Exception {
+        SecretKey key = new SecretKeySpec(AES_128_KEY, "AES");
+        Cipher c = Cipher.getInstance("AES/ECB/NoPadding");
+        c.init(Cipher.ENCRYPT_MODE, key);
+        assertNull(c.update(new byte[0]));
+        assertNull(c.update(new byte[c.getBlockSize() * 2], 0, 0));
+
+        // Try with non-zero offset just in case the implementation mixes up offset and inputLen
+        assertNull(c.update(new byte[c.getBlockSize() * 2], 16, 0));
     }
 
     private void checkCipher_ShortBlock_Failure(CipherTestParam p, String provider) throws Exception {

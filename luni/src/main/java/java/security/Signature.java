@@ -193,7 +193,7 @@ public abstract class Signature extends SignatureSpi {
             if (service == null) {
                 return null;
             }
-            return tryAlgorithmWithProvider(key, service);
+            return tryAlgorithmWithProvider(null, service);
         }
         ArrayList<Provider.Service> services = ENGINE.getServices(algorithm);
         if (services == null) {
@@ -242,6 +242,15 @@ public abstract class Signature extends SignatureSpi {
      * getProvider is final but we need to support late binding.
      */
     void ensureProviderChosen() {
+    }
+
+    /**
+     * Gets the SPI implementation backing this signature.
+     *
+     * @hide
+     */
+    public SignatureSpi getSpi() {
+        return null;
     }
 
     /**
@@ -730,8 +739,11 @@ public abstract class Signature extends SignatureSpi {
 
         /**
          * Convenience call when the Key is not available.
+         *
+         * @hide
          */
-        private SignatureSpi getSpi() {
+        @Override
+        public SignatureSpi getSpi() {
             return getSpi(null);
         }
     }

@@ -19,14 +19,22 @@ package dalvik.system;
 import android.system.ErrnoException;
 import android.system.StructStat;
 import java.io.File;
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.JarURLConnection;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
+import java.net.URLConnection;
+import java.net.URLStreamHandler;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.jar.JarFile;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import libcore.io.IoUtils;
 import libcore.io.Libcore;
@@ -51,6 +59,9 @@ import static android.system.OsConstants.*;
     /** class definition context */
     private final ClassLoader definingContext;
 
+    /** List of dexfiles. */
+    private final List<File> dexFiles;
+
     /**
      * List of dex/resource (class path) elements.
      * Should be called pathElements, but the Facebook app uses reflection
@@ -59,7 +70,7 @@ import static android.system.OsConstants.*;
     private final Element[] dexElements;
 
     /** List of native library directories. */
-    private final File[] nativeLibraryDirectories;
+    private final List<File> nativeLibraryDirectories;
 
     /**
      * Exceptions thrown during creation of the dexElements list.
@@ -106,7 +117,9 @@ import static android.system.OsConstants.*;
 
         this.definingContext = definingContext;
         ArrayList<IOException> suppressedExceptions = new ArrayList<IOException>();
-        this.dexElements = makeDexElements(splitDexPath(dexPath), optimizedDirectory,
+        // save dexPath for BaseDexClassLoader
+        this.dexFiles = splitDexPath(dexPath);
+        this.dexElements = makeDexElements(dexFiles, optimizedDirectory,
                                            suppressedExceptions);
         if (suppressedExceptions.size() > 0) {
             this.dexElementsSuppressedExceptions =
@@ -118,15 +131,25 @@ import static android.system.OsConstants.*;
     }
 
     @Override public String toString() {
+        File[] nativeLibraryDirectoriesArray =
+                nativeLibraryDirectories.toArray(new File[nativeLibraryDirectories.size()]);
+
         return "DexPathList[" + Arrays.toString(dexElements) +
-            ",nativeLibraryDirectories=" + Arrays.toString(nativeLibraryDirectories) + "]";
+            ",nativeLibraryDirectories=" + Arrays.toString(nativeLibraryDirectoriesArray) + "]";
     }
 
     /**
      * For BaseDexClassLoader.getLdLibraryPath.
      */
-    public File[] getNativeLibraryDirectories() {
+    public List<File> getNativeLibraryDirectories() {
         return nativeLibraryDirectories;
+    }
+
+    /**
+     * For BaseDexClassLoader.getDexPath.
+     */
+    public List<File> getDexFiles() {
+        return dexFiles;
     }
 
     /**
@@ -135,7 +158,7 @@ import static android.system.OsConstants.*;
      * and readable files. (That is, directories are not included in the
      * result.)
      */
-    private static ArrayList<File> splitDexPath(String path) {
+    private static List<File> splitDexPath(String path) {
         return splitPaths(path, null, false);
     }
 
@@ -146,7 +169,7 @@ import static android.system.OsConstants.*;
      * from the system library path, and pruning out any elements that
      * do not refer to existing and readable directories.
      */
-    private static File[] splitLibraryPath(String path) {
+    private static List<File> splitLibraryPath(String path) {
         // Native libraries may exist in both the system and
         // application library paths, and we use this search order:
         //
@@ -154,8 +177,7 @@ import static android.system.OsConstants.*;
         //   2. the VM's library path from the system property for system libraries
         //
         // This order was reversed prior to Gingerbread; see http://b/2933456.
-        ArrayList<File> result = splitPaths(path, System.getProperty("java.library.path"), true);
-        return result.toArray(new File[result.size()]);
+        return splitPaths(path, System.getProperty("java.library.path"), true);
     }
 
     /**
@@ -167,9 +189,8 @@ import static android.system.OsConstants.*;
      * are empty or {@code null}, or all elements get pruned out, then
      * this returns a zero-element list.
      */
-    private static ArrayList<File> splitPaths(String path1, String path2,
-            boolean wantDirectories) {
-        ArrayList<File> result = new ArrayList<File>();
+    private static List<File> splitPaths(String path1, String path2, boolean wantDirectories) {
+        List<File> result = new ArrayList<File>();
 
         splitAndAdd(path1, wantDirectories, result);
         splitAndAdd(path2, wantDirectories, result);
@@ -181,7 +202,7 @@ import static android.system.OsConstants.*;
      * and filtering and adding to a result.
      */
     private static void splitAndAdd(String searchPath, boolean directoriesOnly,
-            ArrayList<File> resultList) {
+            List<File> resultList) {
         if (searchPath == null) {
             return;
         }
@@ -200,8 +221,8 @@ import static android.system.OsConstants.*;
      * Makes an array of dex/resource path elements, one per element of
      * the given array.
      */
-    private static Element[] makeDexElements(ArrayList<File> files, File optimizedDirectory,
-                                             ArrayList<IOException> suppressedExceptions) {
+    private static Element[] makeDexElements(List<File> files, File optimizedDirectory,
+                                             List<IOException> suppressedExceptions) {
         ArrayList<Element> elements = new ArrayList<Element>();
         /*
          * Open all files and load the (direct or contained) dex files
@@ -397,6 +418,7 @@ import static android.system.OsConstants.*;
         private final DexFile dexFile;
 
         private ZipFile zipFile;
+        private URLStreamHandler urlHandler;
         private boolean initialized;
 
         public Element(File file, boolean isDirectory, File zip, DexFile dexFile) {
@@ -429,6 +451,7 @@ import static android.system.OsConstants.*;
 
             try {
                 zipFile = new ZipFile(zip);
+                urlHandler = new ElementURLStreamHandler(zipFile);
             } catch (IOException ioe) {
                 /*
                  * Note: ZipException (a subclass of IOException)
@@ -468,15 +491,113 @@ import static android.system.OsConstants.*;
 
             try {
                 /*
-                 * File.toURL() is compliant with RFC 1738 in
+                 * File.toURI() is compliant with RFC 1738 in
                  * always creating absolute path names. If we
                  * construct the URL by concatenating strings, we
                  * might end up with illegal URLs for relative
                  * names.
                  */
-                return new URL("jar:" + file.toURL() + "!/" + name);
+                URI fileUri = file.toURI();
+                return new URL("jar", null, -1, fileUri.toString() + "!/" + name, urlHandler);
             } catch (MalformedURLException ex) {
                 throw new RuntimeException(ex);
+            }
+        }
+
+        /**
+         * URLStreamHandler for an Element. Avoids the need to open a .jar file again to read
+         * resources.
+         */
+        private static class ElementURLStreamHandler extends URLStreamHandler {
+
+            private final ZipFile zipFile;
+
+            public ElementURLStreamHandler(ZipFile zipFile) {
+                this.zipFile = zipFile;
+            }
+
+            @Override
+            protected URLConnection openConnection(URL url) throws IOException {
+                return new ElementJarURLConnection(url, zipFile);
+            }
+        }
+
+        /**
+         * A JarURLConnection that is backed by a ZipFile held open by an {@link Element}. For
+         * backwards compatibility it extends JarURLConnection even though it's not actually backed
+         * by a {@link JarFile}.
+         */
+        private static class ElementJarURLConnection extends JarURLConnection {
+
+            private final ZipFile zipFile;
+            private final ZipEntry zipEntry;
+
+            private InputStream jarInput;
+            private boolean closed;
+            private JarFile jarFile;
+
+            public ElementJarURLConnection(URL url, ZipFile zipFile) throws MalformedURLException {
+                super(url);
+                this.zipFile = zipFile;
+                this.zipEntry = zipFile.getEntry(getEntryName());
+                if (zipEntry == null) {
+                    throw new MalformedURLException(
+                            "URL does not correspond to an entry in the zip file. URL=" + url
+                                    + ", zipfile=" + zipFile.getName());
+                }
+            }
+
+            @Override
+            public void connect() {
+                connected = true;
+            }
+
+            @Override
+            public JarFile getJarFile() throws IOException {
+                // This is expensive because we only pretend that we wrap a JarFile.
+                if (jarFile == null) {
+                    jarFile = new JarFile(zipFile.getName());
+                }
+                return jarFile;
+            }
+
+            @Override
+            public InputStream getInputStream() throws IOException {
+                if (closed) {
+                    throw new IllegalStateException("JarURLConnection InputStream has been closed");
+                }
+                connect();
+                if (jarInput != null) {
+                    return jarInput;
+                }
+                return jarInput = new FilterInputStream(zipFile.getInputStream(zipEntry)) {
+                    @Override
+                    public void close() throws IOException {
+                        super.close();
+                        closed = true;
+                    }
+                };
+            }
+
+            /**
+             * Returns the content type of the entry based on the name of the entry. Returns
+             * non-null results ("content/unknown" for unknown types).
+             *
+             * @return the content type
+             */
+            @Override
+            public String getContentType() {
+                String cType = guessContentTypeFromName(getEntryName());
+                if (cType == null) {
+                    cType = "content/unknown";
+                }
+                return cType;
+            }
+
+            @Override
+            public int getContentLength() {
+                connect();
+                return (int) zipEntry.getSize();
             }
         }
     }

@@ -366,8 +366,10 @@ public class Cipher {
 
     /**
      * Convenience call when the Key is not available.
+     *
+     * @hide
      */
-    private CipherSpi getSpi() {
+    public CipherSpi getSpi() {
         return getSpi(null);
     }
 
@@ -419,7 +421,7 @@ public class Cipher {
             if (service == null) {
                 return null;
             }
-            return tryTransformWithProvider(key, transformParts, type, service);
+            return tryTransformWithProvider(null, transformParts, type, service);
         }
         ArrayList<Provider.Service> services = ENGINE.getServices(transform);
         if (services == null) {
@@ -1005,8 +1007,7 @@ public class Cipher {
      *            the offset in the input to start.
      * @param inputLen
      *            the length of the input to transform.
-     * @return the transformed bytes in a new buffer, or {@code null} if the
-     *         input has zero length.
+     * @return the transformed bytes in a new buffer, or {@code null} if {@code inputLen} is zero.
      * @throws IllegalStateException
      *             if this cipher instance is not initialized for encryption or
      *             decryption.
@@ -1023,7 +1024,7 @@ public class Cipher {
             throw new IllegalArgumentException("input == null");
         }
         checkInputOffsetAndCount(input.length, inputOffset, inputLen);
-        if (input.length == 0) {
+        if (inputLen == 0) {
             return null;
         }
         return getSpi().engineUpdate(input, inputOffset, inputLen);

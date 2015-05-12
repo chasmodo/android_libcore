@@ -33,6 +33,10 @@ public final class VMRuntime {
      */
     private static final VMRuntime THE_ONE = new VMRuntime();
 
+    // Note: Instruction set names are used to construct the names of some
+    // system properties. To be sure that the properties stay valid the
+    // instruction set name should not exceed 7 characters. See installd
+    // and the package manager for the actual propeties.
     private static final Map<String, String> ABI_TO_INSTRUCTION_SET_MAP
             = new HashMap<String, String>();
     static {
@@ -272,6 +276,12 @@ public final class VMRuntime {
     public native void clearGrowthLimit();
 
     /**
+     * Make the current growth limit the new non growth limit capacity by releasing pages which
+     * are after the growth limit but before the non growth limit capacity.
+     */
+    public native void clampGrowthLimit();
+
+    /**
      * Returns true if either a Java debugger or native debugger is active.
      */
     public native boolean isDebuggerActive();
@@ -291,8 +301,13 @@ public final class VMRuntime {
      */
     public native void registerNativeFree(int bytes);
 
-    public native void trimHeap();
+    public native void requestConcurrentGC();
     public native void concurrentGC();
+    public native void requestHeapTrim();
+    public native void trimHeap();
+    public native void startHeapTaskProcessor();
+    public native void stopHeapTaskProcessor();
+    public native void runHeapTasks();
 
     /**
      * Let the heap know of the new process state. This can change allocation and garbage collection
